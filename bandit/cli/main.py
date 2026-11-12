@@ -193,6 +193,16 @@ def main():
         help="maximum number of code lines to output for each issue",
     )
     parser.add_argument(
+        "-j",
+        "--jobs",
+        dest="jobs",
+        action="store",
+        default=1,
+        type=int,
+        help="number of worker processes used to scan files in parallel "
+        "(default: 1, i.e. sequential scan)",
+    )
+    parser.add_argument(
         "-c",
         "--configfile",
         dest="config_file",
@@ -520,6 +530,13 @@ def main():
             "max code lines output for issue",
         )
 
+        args.jobs = _log_option_source(
+            parser.get_default("jobs"),
+            args.jobs,
+            int(ini_options.get("jobs") or 0) or None,
+            "number of parallel scan jobs",
+        )
+
         args.profile = _log_option_source(
             parser.get_default("profile"),
             args.profile,
@@ -603,6 +620,10 @@ def main():
         LOG.error(e)
         sys.exit(2)
 
+    if args.jobs < 1:
+        LOG.error("Number of jobs (-j) must be 1 or greater")
+        sys.exit(2)
+
     if not args.targets:
         parser.print_usage()
         sys.exit(2)
@@ -635,6 +656,7 @@ def main():
         verbose=args.verbose,
         quiet=args.quiet,
         ignore_nosec=args.ignore_nosec,
+        jobs=args.jobs,
     )
 
     if args.baseline is not None:

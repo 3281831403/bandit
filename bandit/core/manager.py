@@ -7,6 +7,7 @@ import fnmatch
 import io
 import json
 import logging
+import multiprocessing
 import os
 import re
 import sys
@@ -28,6 +29,94 @@ NOSEC_COMMENT = re.compile(r"#\s*nosec:?\s*(?P<tests>[^#]+)?#?")
 NOSEC_COMMENT_TESTS = re.compile(r"(?:(B\d+|[a-z\d_]+),?)+", re.IGNORECASE)
 PROGRESS_THRESHOLD = 50
 
+# State used by worker processes when scanning files in parallel, set up
+# once per worker by _init_parallel_worker().
+_WORKER_STATE = {}
+
+
+def _init_parallel_worker(config, profile, debug, ignore_nosec):
+    """Initializer for each worker process of the parallel scan pool."""
+    _WORKER_STATE["test_set"] = b_test_set.BanditTestSet(config, profile)
+    _WORKER_STATE["debug"] = debug
+    _WORKER_STATE["ignore_nosec"] = ignore_nosec
+
+
+def _scan_file(fname):
+    """Scan a single file, intended to run in a worker process.
+
+    Mirrors the per-file work done by BanditManager._parse_file but
+    returns the collected data instead of storing it on the manager,
+    so the parent process can merge it in a deterministic order.
+
+    :return: tuple of (fname, score, issues, file_metrics, skipped) where
+        skipped is a (fname, reason) tuple or None
+    """
+    test_set = _WORKER_STATE["test_set"]
+    debug = _WORKER_STATE["debug"]
+    ignore_nosec = _WORKER_STATE["ignore_nosec"]
+
+    file_metrics = metrics.Metrics()
+    try:
+        with open(fname, "rb") as fdata:
+            data = fdata.read()
+    except OSError as e:
+        return fname, None, [], None, (fname, e.strerror)
+
+    try:
+        # parse the current file
+        lines = data.splitlines()
+        file_metrics.begin(fname)
+        file_metrics.count_locs(lines)
+        # nosec_lines is a dict of line number -> set of tests to ignore
+        #                                         for the line
+        nosec_lines = dict()
+        try:
+            tokens = tokenize.tokenize(io.BytesIO(data).readline)
+            if not ignore_nosec:
+                for toktype, tokval, (lineno, _), _, _ in tokens:
+                    if toktype == tokenize.COMMENT:
+                        nosec_lines[lineno] = _parse_nosec_comment(tokval)
+        except tokenize.TokenError:
+            pass
+
+        res = b_node_visitor.BanditNodeVisitor(
+            fname,
+            io.BytesIO(data),
+            b_meta_ast.BanditMetaAst(),
+            test_set,
+            debug,
+            nosec_lines,
+            file_metrics,
+        )
+        score = res.process(data)
+    except KeyboardInterrupt:
+        raise
+    except SyntaxError:
+        return (
+            fname,
+            None,
+            [],
+            file_metrics.data[fname],
+            (fname, "syntax error while parsing AST from file"),
+        )
+    except Exception:
+        LOG.debug("  Exception traceback: %s", traceback.format_exc())
+        return (
+            fname,
+            None,
+            [],
+            file_metrics.data[fname],
+            (fname, "exception while scanning file"),
+        )
+
+    issues = res.tester.results
+    for iss in issues:
+        # fdata holds an open file object which cannot be pickled; it is
+        # only ever used for issues reported on <stdin>
+        iss.fdata = None
+    file_metrics.count_issues([score])
+    return fname, score, issues, file_metrics.data[fname], None
+
 
 class BanditManager:
     scope = []
@@ -41,6 +130,7 @@ class BanditManager:
         quiet=False,
         profile=None,
         ignore_nosec=False,
+        jobs=1,
     ):
         """Get logger, config, AST handler, and result store ready
 
@@ -52,6 +142,7 @@ class BanditManager:
         :param quiet: Whether to only show output in the case of an error
         :param profile_name: Optional name of profile to use (from cmd line)
         :param ignore_nosec: Whether to ignore #nosec or not
+        :param jobs: Number of files to scan in parallel (1 = sequential)
         :return:
         """
         self.debug = debug
@@ -60,7 +151,9 @@ class BanditManager:
         if not profile:
             profile = {}
         self.ignore_nosec = ignore_nosec
+        self.jobs = jobs
         self.b_conf = config
+        self.profile = profile
         self.files_list = []
         self.excluded_files = []
         self.b_ma = b_meta_ast.BanditMetaAst()
@@ -263,6 +356,16 @@ class BanditManager:
 
         :return: -
         """
+        if self.jobs > 1 and len(self.files_list) > 1:
+            self._run_tests_parallel()
+        else:
+            self._run_tests_sequential()
+
+        # do final aggregation of metrics
+        self.metrics.aggregate()
+
+    def _run_tests_sequential(self):
+        """Runs through all files in the scope, one at a time"""
         # if we have problems with a file, we'll remove it from the files_list
         # and add it to the skipped list instead
         new_files_list = list(self.files_list)
@@ -295,8 +398,79 @@ class BanditManager:
         # reflect any files which may have been skipped
         self.files_list = new_files_list
 
-        # do final aggregation of metrics
-        self.metrics.aggregate()
+    def _run_tests_parallel(self):
+        """Runs through all files in the scope using a process pool
+
+        Files are scanned by worker processes, but all per-file data
+        (issues, scores, metrics, skipped entries) is merged back in the
+        original sorted file order so the end result is identical to a
+        sequential run.
+        """
+        new_files_list = list(self.files_list)
+        scanned = {}
+
+        # stdin can only be read in this process, it is handled inline below
+        pool_files = [f for f in self.files_list if f != "-"]
+        if pool_files:
+            with multiprocessing.Pool(
+                processes=self.jobs,
+                initializer=_init_parallel_worker,
+                initargs=(
+                    self.b_conf,
+                    self.profile,
+                    self.debug,
+                    self.ignore_nosec,
+                ),
+            ) as pool:
+                scan_results = pool.imap(_scan_file, pool_files, chunksize=1)
+                if (
+                    len(pool_files) > PROGRESS_THRESHOLD
+                    and LOG.getEffectiveLevel() <= logging.INFO
+                ):
+                    scan_results = progress.track(
+                        scan_results, total=len(pool_files)
+                    )
+                try:
+                    for result in scan_results:
+                        scanned[result[0]] = result[1:]
+                except KeyboardInterrupt:
+                    sys.exit(2)
+
+        # merge per-file results in the original (sorted) file order
+        for fname in self.files_list:
+            if fname == "-":
+                open_fd = os.fdopen(sys.stdin.fileno(), "rb", 0)
+                fdata = io.BytesIO(open_fd.read())
+                new_files_list = [
+                    "<stdin>" if x == "-" else x for x in new_files_list
+                ]
+                self._parse_file("<stdin>", fdata, new_files_list)
+                continue
+
+            score, issues, file_metrics, skipped = scanned[fname]
+            if file_metrics is not None:
+                self.metrics.data[fname] = file_metrics
+            if skipped is not None:
+                if skipped[1] == "exception while scanning file":
+                    LOG.error(
+                        "Exception occurred when executing tests "
+                        "against %s.",
+                        fname,
+                    )
+                    if not LOG.isEnabledFor(logging.DEBUG):
+                        LOG.error(
+                            'Run "bandit --debug %s" to see the full '
+                            "traceback.",
+                            fname,
+                        )
+                self.skipped.append(skipped)
+                new_files_list.remove(fname)
+                continue
+            self.scores.append(score)
+            self.results.extend(issues)
+
+        # reflect any files which may have been skipped
+        self.files_list = new_files_list
 
     def _parse_file(self, fname, fdata, new_files_list):
         try:

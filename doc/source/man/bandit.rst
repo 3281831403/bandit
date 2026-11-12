@@ -5,7 +5,7 @@ bandit
 SYNOPSIS
 ========
 
-bandit [-h] [-r] [-a {file,vuln}] [-n CONTEXT_LINES] [-c CONFIG_FILE]
+bandit [-h] [-r] [-a {file,vuln}] [-n CONTEXT_LINES] [-j JOBS] [-c CONFIG_FILE]
             [-p PROFILE] [-t TESTS] [-s SKIPS] [-l] [-i]
             [-f {csv,custom,html,json,screen,txt,xml,yaml}]
             [--msg-template MSG_TEMPLATE] [-o [OUTPUT_FILE]] [-v] [-d] [-q]
@@ -31,6 +31,8 @@ OPTIONS
                         filename
   -n CONTEXT_LINES, --number CONTEXT_LINES
                         maximum number of code lines to output for each issue
+  -j JOBS, --jobs JOBS  number of worker processes used to scan files in
+                        parallel (default: 1, i.e. sequential scan)
   -c CONFIG_FILE, --configfile CONFIG_FILE
                         optional config file to use for selecting plugins and
                         overriding defaults

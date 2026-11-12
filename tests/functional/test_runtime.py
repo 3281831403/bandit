@@ -1,9 +1,11 @@
 # Copyright (c) 2015 VMware, Inc.
 #
 # SPDX-License-Identifier: Apache-2.0
+import json
 import os
 import subprocess
 
+import fixtures
 import testtools
 
 
@@ -134,3 +136,44 @@ class RuntimeTests(testtools.TestCase):
         self.assertIn("Issue: [B403:blacklist] Consider possible", output)
         self.assertIn("imports.py:2", output)
         self.assertIn("imports.py:4", output)
+
+    def test_parallel_jobs_match_sequential(self):
+        # running with multiple jobs must produce the same JSON report
+        # (except the timestamp) and the same exit code as a single job
+        def run(jobs, output_path):
+            process = subprocess.Popen(
+                [
+                    "bandit",
+                    "-r",
+                    "examples/",
+                    "-f",
+                    "json",
+                    "-j",
+                    str(jobs),
+                    "-o",
+                    output_path,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                close_fds=True,
+            )
+            process.communicate()
+            return process.poll()
+
+        temp_directory = self.useFixture(fixtures.TempDir()).path
+        output_seq = os.path.join(temp_directory, "sequential.json")
+        output_par = os.path.join(temp_directory, "parallel.json")
+
+        retcode_seq = run(1, output_seq)
+        retcode_par = run(4, output_par)
+
+        self.assertEqual(retcode_seq, retcode_par)
+
+        with open(output_seq) as fd:
+            report_seq = json.load(fd)
+        with open(output_par) as fd:
+            report_par = json.load(fd)
+        # the timestamp is the only field allowed to differ
+        report_seq.pop("generated_at")
+        report_par.pop("generated_at")
+        self.assertEqual(report_seq, report_par)

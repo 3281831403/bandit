@@ -327,6 +327,67 @@ class ManagerTests(testtools.TestCase):
         # since IOError is not constant
         self.assertIn(no_such_file, str(self.manager.skipped))
 
+    def test_run_tests_parallel_matches_sequential(self):
+        # Test that running with multiple jobs produces exactly the same
+        # results, scores, metrics, and skipped files as a sequential run
+        temp_directory = self.useFixture(fixtures.TempDir()).path
+        contents = {
+            "a_clean.py": "x = 1\n",
+            "b_assert.py": "assert True\n",
+            "c_shell.py": "import subprocess\n"
+            "subprocess.call('ls', shell=True)\n",
+            "d_syntax_error.py": "def broken(:\n",
+            "e_nosec.py": "assert True  # nosec\n",
+        }
+        targets = []
+        for name, text in contents.items():
+            path = os.path.join(temp_directory, name)
+            with open(path, "w") as fd:
+                fd.write(text)
+            targets.append(path)
+
+        def run(jobs):
+            m = manager.BanditManager(
+                config=self.config, agg_type="file", jobs=jobs
+            )
+            m.files_list = sorted(targets)
+            m.run_tests()
+            return m
+
+        sequential = run(1)
+        parallel = run(2)
+
+        self.assertEqual(sequential.files_list, parallel.files_list)
+        self.assertEqual(sequential.skipped, parallel.skipped)
+        self.assertEqual(sequential.scores, parallel.scores)
+        self.assertEqual(
+            list(sequential.metrics.data), list(parallel.metrics.data)
+        )
+        self.assertEqual(sequential.metrics.data, parallel.metrics.data)
+        self.assertEqual(
+            [i.as_dict() for i in sequential.results],
+            [i.as_dict() for i in parallel.results],
+        )
+
+    def test_run_tests_parallel_ioerror(self):
+        # Test that an unreadable file is skipped when running parallel jobs
+        temp_directory = self.useFixture(fixtures.TempDir()).path
+        some_file = os.path.join(temp_directory, "some_code_file.py")
+        with open(some_file, "w") as fd:
+            fd.write("some_code = x + 1")
+        no_such_file = os.path.join(temp_directory, "no_such_file.py")
+        m = manager.BanditManager(
+            config=self.config, agg_type="file", jobs=2
+        )
+        m.files_list = [no_such_file, some_file]
+        m.run_tests()
+        self.assertIn(no_such_file, str(m.skipped))
+        self.assertEqual([some_file], m.files_list)
+
+    def test_manager_jobs_default(self):
+        # make sure the manager defaults to a single (sequential) job
+        self.assertEqual(1, self.manager.jobs)
+
     def test_compare_baseline(self):
         issue_a = self._get_issue_instance()
         issue_a.fname = "file1.py"
