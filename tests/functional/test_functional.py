@@ -872,6 +872,19 @@ class FunctionalTests(testtools.TestCase):
         }
         self.check_example("tarfile_extractall.py", expect)
 
+    def test_tarfile_unsafe_members_stable_text(self):
+        """Test B202 issue text does not contain process-specific data."""
+        self.b_mgr.scores = []
+        self.run_example("tarfile_extractall.py")
+        texts = [i.text for i in self.b_mgr.get_issue_list()]
+
+        self.assertTrue(
+            any("'Other': '[]'" in text for text in texts),
+            "expected members argument to be rendered as source text",
+        )
+        for text in texts:
+            self.assertNotIn("object at 0x", text)
+
     def test_pytorch_load(self):
         """Test insecure usage of torch.load."""
         expect = {

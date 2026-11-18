@@ -339,3 +339,143 @@ class BaselineFunctionalTests(testtools.TestCase):
         self.assertIn(candidate_example_five, return_value)
         # candidate #6
         self.assertIn(candidate_example_six, return_value)
+
+    def _run_bandit(self, args, cwd=None):
+        """Run a bandit command and return the output and return code."""
+        process = subprocess.Popen(
+            ["bandit"] + args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            close_fds=True,
+        )
+        stdout, stderr = process.communicate()
+        return (stdout.decode("utf-8"), process.poll())
+
+    def _create_baseline_from_contents(self, contents):
+        """Populate a directory with the given contents and baseline it."""
+        target_directory = self.useFixture(fixtures.TempDir()).path
+        for name, data in contents.items():
+            with open(os.path.join(target_directory, name), "w") as fd:
+                fd.write(data)
+        baseline_report = os.path.join(
+            target_directory, self.baseline_report_file
+        )
+        _, return_code = self._run_bandit(
+            ["-r", "-f", "json", "-o", baseline_report, target_directory]
+        )
+        return target_directory, baseline_report, return_code
+
+    def test_added_duplicate_issue_is_a_candidate(self):
+        """An extra occurrence of an existing issue counts as new.
+
+        Adding a second identical assert statement to a file produces an issue
+        that is equal to the one in the baseline. It must still be reported,
+        otherwise increased counts pass the gate unnoticed.
+        """
+        contents = {"duplicate.py": "assert True\n"}
+        target_directory, baseline_report, baseline_code = (
+            self._create_baseline_from_contents(contents)
+        )
+        self.assertEqual(1, baseline_code)
+
+        target_file = os.path.join(target_directory, "duplicate.py")
+
+        # unchanged content must produce no candidates
+        output, return_code = self._run_bandit(
+            ["-b", baseline_report, target_file]
+        )
+        self.assertEqual(0, return_code)
+        self.assertIn(baseline_no_issues_found, output)
+
+        # an extra identical issue must be reported
+        with open(target_file, "w") as fd:
+            fd.write("assert True\nassert True\n")
+        output, return_code = self._run_bandit(
+            ["-b", baseline_report, target_file]
+        )
+        self.assertEqual(1, return_code)
+        self.assertIn("Issue: [B101:assert_used]", output)
+
+    def test_baseline_matches_alternate_path_spellings(self):
+        """How a path is spelled must not affect baseline matching."""
+        contents = {
+            "assert-example.py": "assert True\n",
+            "yaml-example.py": "import yaml\nyaml.load('a')\n",
+        }
+        target_directory, baseline_report, _ = (
+            self._create_baseline_from_contents(contents)
+        )
+
+        parent = os.path.dirname(target_directory)
+        directory_name = os.path.basename(target_directory)
+        spelled_paths = [
+            directory_name,
+            "./" + directory_name,
+            directory_name + "/",
+            target_directory,
+        ]
+        for path in spelled_paths:
+            output, return_code = self._run_bandit(
+                ["-r", "-b", baseline_report, path], cwd=parent
+            )
+            self.assertEqual(
+                0,
+                return_code,
+                f"alternate spelling {path!r} reported new candidates:\n"
+                f"{output}",
+            )
+            self.assertIn(baseline_no_issues_found, output)
+
+    def test_baseline_issue_text_is_stable_across_processes(self):
+        """Regenerating a baseline and rerunning must report nothing new.
+
+        Issue texts that embed process-specific data (such as the memory
+        address of an object) make every run look like a new finding.
+        """
+        with open("examples/tarfile_extractall.py") as fd:
+            contents = {"tarfile_extractall.py": fd.read()}
+
+        target_directory, baseline_report, baseline_code = (
+            self._create_baseline_from_contents(contents)
+        )
+        self.assertEqual(1, baseline_code)
+
+        output, return_code = self._run_bandit(
+            ["-r", "-b", baseline_report, target_directory]
+        )
+        self.assertEqual(0, return_code)
+        self.assertIn(baseline_no_issues_found, output)
+
+    def test_baseline_with_severity_filter(self):
+        """Severity filtering must not create false candidates."""
+        with open("examples/tarfile_extractall.py") as fd:
+            contents = {"tarfile_extractall.py": fd.read()}
+
+        target_directory = self.useFixture(fixtures.TempDir()).path
+        baseline_report = os.path.join(
+            target_directory, self.baseline_report_file
+        )
+        target_file = os.path.join(target_directory, "tarfile_extractall.py")
+        with open(target_file, "w") as fd:
+            fd.write(contents["tarfile_extractall.py"])
+
+        _, baseline_code = self._run_bandit(
+            [
+                "-ll",
+                "-r",
+                "-f",
+                "json",
+                "-o",
+                baseline_report,
+                target_directory,
+            ]
+        )
+        self.assertEqual(1, baseline_code)
+
+        output, return_code = self._run_bandit(
+            ["-ll", "-r", "-b", baseline_report, target_directory]
+        )
+        self.assertEqual(0, return_code)
+        self.assertIn(baseline_no_issues_found, output)

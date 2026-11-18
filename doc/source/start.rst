@@ -120,6 +120,12 @@ This is useful for ignoring known vulnerabilities that you believe are non-issue
 
     bandit -f json -o PATH_TO_OUTPUT_FILE
 
+Results are compared to the baseline per occurrence, so adding another
+instance of a finding that already exists in the baseline is still reported.
+Line numbers may change without affecting the comparison, and the same file
+may be referred to by different path spellings (e.g. ``examples/x.py``,
+``./examples/x.py`` or an absolute path).
+
 Version control integration
 ---------------------------
 

@@ -105,11 +105,15 @@ class BanditManager:
     def filter_results(self, sev_filter, conf_filter):
         """Returns a list of results filtered by the baseline
 
-        This works by checking the number of results returned from each file we
-        process. If the number of results is different to the number reported
-        for the same file in the baseline, then we return all results for the
-        file. We can't reliably return just the new results, as line numbers
-        will likely have changed.
+        Results are matched against the baseline as a multiset: an issue is
+        considered new when it occurs more often in the current results than
+        it does in the baseline. Which result is treated as the new one is
+        ambiguous, so all matching results are returned as candidates for each
+        unmatched issue.
+
+        Line numbers aren't part of the comparison, as they will likely have
+        changed. Filenames are normalized so that alternate spellings of the
+        same path still match.
 
         :param sev_filter: severity level filter to apply
         :param conf_filter: confidence level filter to apply
@@ -425,17 +429,67 @@ def _matches_glob_list(filename, glob_list):
     return False
 
 
+def _normalize_filename(filename):
+    """Return a canonical form of a filename for baseline comparison
+
+    The same file can be referred to using different spellings, e.g.
+    ``examples/foo.py``, ``./examples/foo.py``, ``examples//foo.py`` or an
+    absolute path.  Which of these is used should only affect how results are
+    displayed, not whether a result matches its entry in the baseline, so
+    paths are made absolute and normalized before they are compared.
+
+    :param filename: Filename as reported for an issue
+    :return: Normalized filename used for matching only
+    """
+    if not filename or filename == "<stdin>":
+        return filename
+    return os.path.abspath(filename)
+
+
+def _baseline_issue_key(issue_obj):
+    """Build the key used to match an issue against baseline entries
+
+    Line numbers intentionally aren't part of the key: they may have moved
+    between the baseline and the current run, as documented in
+    filter_results.  The filename is normalized so that alternate spellings
+    of the same path compare equal.
+
+    :param issue_obj: Issue to build a matching key for
+    :return: Tuple identifying the issue for baseline matching
+    """
+    return (
+        issue_obj.test_id,
+        issue_obj.test,
+        issue_obj.severity,
+        issue_obj.confidence,
+        issue_obj.cwe.id,
+        _normalize_filename(issue_obj.fname),
+        issue_obj.text,
+    )
+
+
 def _compare_baseline_results(baseline, results):
     """Compare a baseline list of issues to list of results
 
     This function compares a baseline set of issues to a current set of issues
-    to find results that weren't present in the baseline.
+    to find results that weren't present in the baseline.  Issues are compared
+    as a multiset rather than by membership alone, so that adding another
+    instance of an issue that already exists in the baseline is still reported
+    as a new issue.
 
     :param baseline: Baseline list of issues
     :param results: Current list of issues
     :return: List of unmatched issues
     """
-    return [a for a in results if a not in baseline]
+    remaining = collections.Counter(_baseline_issue_key(b) for b in baseline)
+    unmatched = []
+    for result in results:
+        key = _baseline_issue_key(result)
+        if remaining[key] > 0:
+            remaining[key] -= 1
+        else:
+            unmatched.append(result)
+    return unmatched
 
 
 def _find_candidate_matches(unmatched_issues, results_list):

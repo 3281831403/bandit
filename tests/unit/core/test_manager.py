@@ -361,6 +361,54 @@ class ManagerTests(testtools.TestCase):
             ),
         )
 
+    def test_compare_baseline_duplicate_issues(self):
+        # An additional instance of an issue already in the baseline is new
+        # even though an equal issue is present in the baseline.
+        issue_a = self._get_issue_instance()
+        issue_a.fname = "file1.py"
+
+        duplicate = self._get_issue_instance()
+        duplicate.fname = "file1.py"
+
+        self.assertEqual(
+            [duplicate],
+            manager._compare_baseline_results([issue_a], [issue_a, duplicate]),
+        )
+
+        # The same count is not new, regardless of how many duplicates exist
+        self.assertEqual(
+            [],
+            manager._compare_baseline_results(
+                [issue_a, duplicate], [issue_a, duplicate]
+            ),
+        )
+
+        # Two extra instances produce two unmatched issues
+        unmatched = manager._compare_baseline_results(
+            [issue_a], [issue_a, duplicate, self._get_issue_instance()]
+        )
+        self.assertEqual(2, len(unmatched))
+
+    def test_compare_baseline_filename_spellings(self):
+        # Different spellings of the same path must match each other
+        issue_a = self._get_issue_instance()
+        issue_a.fname = "./examples/file1.py"
+
+        issue_b = self._get_issue_instance()
+        issue_b.fname = "examples/file1.py"
+
+        absolute = self._get_issue_instance()
+        absolute.fname = os.path.abspath(issue_b.fname)
+
+        self.assertEqual(
+            [],
+            manager._compare_baseline_results([issue_a], [issue_b]),
+        )
+        self.assertEqual(
+            [],
+            manager._compare_baseline_results([issue_a], [absolute]),
+        )
+
     def test_find_candidate_matches(self):
         issue_a = self._get_issue_instance()
         issue_b = self._get_issue_instance()

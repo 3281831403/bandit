@@ -83,6 +83,21 @@ def exec_issue(level, members=""):
         )
 
 
+def _unparse(node):
+    """Render an AST node as source text for use in the issue message
+
+    The default repr of AST nodes includes their memory address, which
+    changes from one process to the next.  That made baseline comparisons
+    report unchanged issues as new, so render the node's source form instead.
+    """
+    try:
+        return ast.unparse(node)
+    except Exception:
+        # Never let message rendering hide a finding.  The type name is
+        # stable across processes.
+        return type(node).__name__
+
+
 def get_members_value(context):
     for keyword in context.node.keywords:
         if keyword.arg == "members":
@@ -90,7 +105,7 @@ def get_members_value(context):
             if isinstance(arg, ast.Call):
                 return {"Function": arg.func.id}
             else:
-                value = arg.id if isinstance(arg, ast.Name) else arg
+                value = arg.id if isinstance(arg, ast.Name) else _unparse(arg)
                 return {"Other": value}
 
 
