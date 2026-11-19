@@ -94,8 +94,17 @@ This formatter outputs the issues as HTML.
             <div class="metrics-title">
                 Metrics:<br>
             </div>
-            Total lines of code: <span id="loc">9</span><br>
-            Total lines skipped (#nosec): <span id="nosec">0</span>
+            loc: <span id="loc">9</span><br>
+            nosec: <span id="nosec">0</span><br>
+            skipped_tests: <span id="skipped_tests">0</span><br>
+            SEVERITY.UNDEFINED: <span id="SEVERITY-UNDEFINED">0</span><br>
+            SEVERITY.LOW: <span id="SEVERITY-LOW">0</span><br>
+            SEVERITY.MEDIUM: <span id="SEVERITY-MEDIUM">1</span><br>
+            SEVERITY.HIGH: <span id="SEVERITY-HIGH">0</span><br>
+            CONFIDENCE.UNDEFINED: <span id="CONFIDENCE-UNDEFINED">0</span><br>
+            CONFIDENCE.LOW: <span id="CONFIDENCE-LOW">0</span><br>
+            CONFIDENCE.MEDIUM: <span id="CONFIDENCE-MEDIUM">0</span><br>
+            CONFIDENCE.HIGH: <span id="CONFIDENCE-HIGH">1</span><br>
         </div>
     </div>
 
@@ -144,6 +153,11 @@ This formatter outputs the issues as HTML.
 
 .. versionchanged:: 1.7.3
     New field `CWE` added to output
+
+.. versionchanged:: 1.8.0
+    The metrics block emits one span per key of the JSON ``_totals`` block
+    (the span id is the key name with ``.`` replaced by ``-``), and issues
+    without a CWE omit the CWE line instead of rendering ``CWE-0``
 
 """
 import logging
@@ -265,8 +279,7 @@ pre {
     <b>Test ID:</b> {test_id}<br>
     <b>Severity: </b>{severity}<br>
     <b>Confidence: </b>{confidence}<br>
-    <b>CWE: </b><a href="{cwe_link}" target="_blank">CWE-{cwe.id}</a><br>
-    <b>File: </b><a href="{path}" target="_blank">{path}</a><br>
+{cwe_line}    <b>File: </b><a href="{path}" target="_blank">{path}</a><br>
     <b>Line number: </b>{line_number}<br>
     <b>More info: </b><a href="{url}" target="_blank">{url}</a><br>
 {code}
@@ -274,6 +287,11 @@ pre {
 </div>
 </div>
 """
+
+    cwe_block = (
+        '    <b>CWE: </b><a href="{cwe_link}" target="_blank">'
+        'CWE-{cwe.id}</a><br>\n'
+    )
 
     code_block = """
 <div class="code">
@@ -315,8 +333,7 @@ pre {
         <div class="metrics-title">
             Metrics:<br>
         </div>
-        Total lines of code: <span id="loc">{loc}</span><br>
-        Total lines skipped (#nosec): <span id="nosec">{nosec}</span>
+{metrics_lines}
     </div>
 </div>
 
@@ -326,10 +343,15 @@ pre {
 
     baseline = not isinstance(issues, list)
 
+    # keep the issue ordering identical to the other report formats
+    if not baseline:
+        sort_attr = utils.report_sort_attr(manager.agg_type)
+        issues = sorted(issues, key=lambda i: getattr(i, sort_attr))
+
     # build the skipped string to insert in the report
     skipped_str = "".join(
         f"{fname} <b>reason:</b> {reason}<br>"
-        for fname, reason in manager.get_skipped()
+        for fname, reason in sorted(manager.get_skipped())
     )
     if skipped_str:
         skipped_text = skipped_block.format(files_list=skipped_str)
@@ -357,6 +379,14 @@ pre {
             candidates = candidate_block.format(candidate_list=candidates_str)
 
         url = docs_utils.get_url(issue.test_id)
+        # when the plugin sets no CWE, JSON reports an empty issue_cwe
+        # dict; omit the CWE line entirely instead of rendering CWE-0
+        if issue.cwe.id:
+            cwe_line = cwe_block.format(
+                cwe=issue.cwe, cwe_link=issue.cwe.link()
+            )
+        else:
+            cwe_line = ""
         results_str += issue_block.format(
             issue_no=index,
             issue_class=f"issue-sev-{issue.severity.lower()}",
@@ -365,8 +395,7 @@ pre {
             test_text=issue.text,
             severity=issue.severity,
             confidence=issue.confidence,
-            cwe=issue.cwe,
-            cwe_link=issue.cwe.link(),
+            cwe_line=cwe_line,
             path=issue.fname,
             code=code,
             candidates=candidates,
@@ -374,10 +403,17 @@ pre {
             line_number=issue.lineno,
         )
 
-    # build the metrics string to insert in the report
+    # build the metrics string to insert in the report. Emit every key of
+    # the JSON "_totals" block, using the key itself as the span id with
+    # dots replaced by dashes (e.g. SEVERITY.HIGH -> SEVERITY-HIGH)
+    totals = manager.metrics.data["_totals"]
+    metrics_lines = "".join(
+        f'        {key}: <span id="{key.replace(".", "-")}">'
+        f"{html_escape(str(value))}</span><br>\n"
+        for key, value in totals.items()
+    )
     metrics_summary = metrics_block.format(
-        loc=manager.metrics.data["_totals"]["loc"],
-        nosec=manager.metrics.data["_totals"]["nosec"],
+        metrics_lines=metrics_lines.rstrip()
     )
 
     # build the report and output it

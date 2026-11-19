@@ -70,3 +70,46 @@ class CsvFormatterTests(testtools.TestCase):
             self.assertEqual(
                 str(self.issue.end_col_offset), data["end_col_offset"]
             )
+
+    def test_report_without_cwe(self):
+        # a plugin that sets no CWE must not raise a KeyError; JSON emits
+        # an empty issue_cwe dict in that situation
+        self.issue.cwe = issue.Cwe(issue.Cwe.NOTSET)
+
+        with open(self.tmp_fname, "w") as tmp_file:
+            b_csv.report(
+                self.manager,
+                tmp_file,
+                self.issue.severity,
+                self.issue.confidence,
+            )
+
+        with open(self.tmp_fname) as f:
+            reader = csv.DictReader(f)
+            data = next(reader)
+            self.assertEqual("", data["issue_cwe"])
+
+    def test_report_with_skipped_files(self):
+        self.manager.skipped = [
+            ("bad.py", "syntax error while parsing AST from file")
+        ]
+
+        with open(self.tmp_fname, "w") as tmp_file:
+            b_csv.report(
+                self.manager,
+                tmp_file,
+                self.issue.severity,
+                self.issue.confidence,
+            )
+
+        with open(self.tmp_fname) as f:
+            rows = list(csv.DictReader(f))
+            self.assertEqual(2, len(rows))
+            skipped_row = rows[1]
+            self.assertEqual("bad.py", skipped_row["filename"])
+            self.assertEqual(
+                "syntax error while parsing AST from file",
+                skipped_row["issue_text"],
+            )
+            # columns without meaning for a skipped file stay empty
+            self.assertEqual("", skipped_row["test_name"])

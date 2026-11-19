@@ -129,6 +129,29 @@ class IssueTests(testtools.TestCase):
         except UnicodeDecodeError:
             self.fail("Bytes not properly decoded in issue.get_code()")
 
+    def test_from_dict_without_cwe_or_offsets(self):
+        # baselines produced before CWE / column offset support must stay
+        # readable and default to "not set" rather than raising KeyError
+        old_style = {
+            "code": "some test code",
+            "filename": "old_example.py",
+            "issue_severity": bandit.LOW,
+            "issue_confidence": bandit.LOW,
+            "issue_text": "legacy issue",
+            "test_name": "legacy_test",
+            "test_id": "B000",
+            "line_number": 2,
+            "line_range": [2],
+        }
+        loaded = issue.issue_from_dict(old_style)
+
+        self.assertEqual(issue.Cwe.NOTSET, loaded.cwe.id)
+        self.assertEqual({}, loaded.cwe.as_dict())
+        self.assertEqual(0, loaded.col_offset)
+        self.assertEqual(0, loaded.end_col_offset)
+        self.assertEqual("B000", loaded.test_id)
+        self.assertEqual("old_example.py", loaded.fname)
+
 
 def _get_issue_instance(
     severity=bandit.MEDIUM,

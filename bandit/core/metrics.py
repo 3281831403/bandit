@@ -19,16 +19,24 @@ class Metrics:
 
     def __init__(self):
         self.data = dict()
-        self.data["_totals"] = {
-            "loc": 0,
-            "nosec": 0,
-            "skipped_tests": 0,
-        }
+        self.data["_totals"] = self._new_block()
 
-        # initialize 0 totals for criteria and rank; this will be reset later
+    @staticmethod
+    def _new_block():
+        """Create a metrics block with every key initialized to zero.
+
+        Files that are skipped (e.g. syntax errors) never get issue counts
+        added to their block, so the block must start out containing the
+        same full set of keys as a successfully scanned file -- otherwise
+        the per-file entries in the reports carry a different shape.
+        """
+        block = {"loc": 0, "nosec": 0, "skipped_tests": 0}
+
+        # initialize 0 totals for criteria and rank
         for rank in constants.RANKING:
             for criteria in constants.CRITERIA:
-                self.data["_totals"][f"{criteria[0]}.{rank}"] = 0
+                block[f"{criteria[0]}.{rank}"] = 0
+        return block
 
     def begin(self, fname):
         """Begin a new metric block.
@@ -36,11 +44,7 @@ class Metrics:
         This starts a new metric collection name "fname" and makes is active.
         :param fname: the metrics unique name, normally the file name.
         """
-        self.data[fname] = {
-            "loc": 0,
-            "nosec": 0,
-            "skipped_tests": 0,
-        }
+        self.data[fname] = self._new_block()
         self.current = self.data[fname]
 
     def note_nosec(self, num=1):

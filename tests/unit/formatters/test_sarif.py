@@ -137,3 +137,105 @@ class SarifFormatterTests(testtools.TestCase):
                 self.tmp_fname,
                 physicalLocation["artifactLocation"]["uri"],
             )
+
+    def _write_source(self, source):
+        with open(self.tmp_fname, "w") as f:
+            f.write(source)
+
+    def _render_report(self):
+        # render into a separate file: re-opening tmp_fname in "w" mode
+        # would truncate the source code the formatter reads via linecache
+        _, output_fname = tempfile.mkstemp()
+        with open(output_fname, "w") as tmp_file:
+            sarif.report(self.manager, tmp_file, bandit.LOW, bandit.LOW)
+        with open(output_fname) as f:
+            return json.loads(f.read())
+
+    def test_multiline_region_spans_full_line_range(self):
+        # multi-line node: region must reach the last line of line_range
+        # and columns must not be emitted when they span several lines
+        source = (
+            "import subprocess\n"
+            "x = subprocess.Popen(\n"
+            "    'echo',\n"
+            "    shell=True,\n"
+            ")\n"
+        )
+        self._write_source(source)
+        multi = issue.Issue(
+            severity=bandit.MEDIUM,
+            cwe=issue.Cwe.OS_COMMAND_INJECTION,
+            confidence=bandit.HIGH,
+            text="shell injection",
+            test_id="B602",
+        )
+        multi.fname = self.tmp_fname
+        multi.lineno = 4
+        multi.linerange = [2, 3, 4, 5]
+        multi.col_offset = 4
+        multi.end_col_offset = 1
+        multi.test = "subprocess_popen_with_shell_equals_true"
+        self.manager.results = [multi]
+
+        data = self._render_report()
+        region = data["runs"][0]["results"][0]["locations"][0][
+            "physicalLocation"
+        ]["region"]
+        # startLine matches JSON line_number, not the first line_range entry
+        self.assertEqual(4, region["startLine"])
+        # endLine reaches the last line of the multi-line node
+        self.assertEqual(5, region["endLine"])
+        # no inverted column range; columns omitted for multi-line regions
+        self.assertNotIn("endColumn", region)
+        self.assertEqual(5, region["startColumn"])
+        # snippet corresponds to the issue's start line
+        self.assertEqual("    shell=True,\n", region["snippet"]["text"])
+
+    def test_single_line_region_columns(self):
+        self._write_source("assert True\n")
+        single = issue.Issue(
+            severity=bandit.LOW,
+            cwe=issue.Cwe.IMPROPER_CHECK_OF_EXCEPT_COND,
+            confidence=bandit.HIGH,
+            text="assert used",
+            test_id="B101",
+        )
+        single.fname = self.tmp_fname
+        single.lineno = 1
+        single.linerange = [1]
+        single.col_offset = 0
+        single.end_col_offset = 10
+        single.test = "assert_used"
+        self.manager.results = [single]
+
+        data = self._render_report()
+        region = data["runs"][0]["results"][0]["locations"][0][
+            "physicalLocation"
+        ]["region"]
+        self.assertEqual(1, region["startColumn"])
+        self.assertEqual(11, region["endColumn"])
+        self.assertGreaterEqual(region["endColumn"], region["startColumn"])
+
+    def test_rule_without_cwe_has_no_cwe_tag(self):
+        self._write_source("x = 1\n")
+        no_cwe = issue.Issue(
+            severity=bandit.MEDIUM,
+            cwe=issue.Cwe.NOTSET,
+            confidence=bandit.HIGH,
+            text="plugin without cwe",
+            test_id="B999",
+        )
+        no_cwe.fname = self.tmp_fname
+        no_cwe.lineno = 2
+        no_cwe.linerange = [2]
+        no_cwe.col_offset = 0
+        no_cwe.end_col_offset = 4
+        no_cwe.test = "custom_no_cwe"
+        self.manager.results = [no_cwe]
+
+        data = self._render_report()
+        tags = data["runs"][0]["tool"]["driver"]["rules"][0][
+            "properties"
+        ]["tags"]
+        self.assertEqual(["security"], tags)
+        self.assertFalse(any("None" in tag for tag in tags))

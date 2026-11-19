@@ -26,6 +26,11 @@ This formatter outputs the issues in a comma separated values format.
 .. versionchanged:: 1.7.3
     New field `CWE` added to output
 
+.. versionchanged:: 1.8.0
+    An empty ``issue_cwe`` is reported as an empty value instead of raising
+    a ``KeyError`` when a plugin sets no CWE, and skipped files are appended
+    as rows carrying only ``filename`` and ``issue_text``
+
 """
 # Necessary for this formatter to work when imported on Python 2. Importing
 # the standard library's csv module conflicts with the name of this module.
@@ -34,6 +39,7 @@ import logging
 import sys
 
 from bandit.core import docs_utils
+from bandit.formatters import utils as formatter_utils
 
 LOG = logging.getLogger(__name__)
 
@@ -51,6 +57,9 @@ def report(manager, fileobj, sev_level, conf_level, lines=-1):
     results = manager.get_issue_list(
         sev_level=sev_level, conf_level=conf_level
     )
+    sort_attr = formatter_utils.report_sort_attr(manager.agg_type)
+    results = sorted(results, key=lambda i: getattr(i, sort_attr))
+    skipped = sorted(manager.get_skipped(), key=lambda s: s[0])
 
     with fileobj:
         fieldnames = [
@@ -74,9 +83,17 @@ def report(manager, fileobj, sev_level, conf_level, lines=-1):
         writer.writeheader()
         for result in results:
             r = result.as_dict(with_code=False)
-            r["issue_cwe"] = r["issue_cwe"]["link"]
+            # a plugin may omit the CWE, in which case JSON carries an
+            # empty dict; mirror that instead of raising a KeyError
+            r["issue_cwe"] = r["issue_cwe"].get("link", "")
             r["more_info"] = docs_utils.get_url(r["test_id"])
             writer.writerow(r)
+
+        # report skipped files (e.g. syntax errors) so CSV stays consistent
+        # with the errors section of the JSON report; only the columns that
+        # carry meaning for a skipped file are filled in
+        for fname, reason in skipped:
+            writer.writerow({"filename": fname, "issue_text": reason})
 
     if fileobj.name != sys.stdout.name:
         LOG.info("CSV output written to file: %s", fileobj.name)

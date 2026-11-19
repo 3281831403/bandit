@@ -124,6 +124,12 @@ This formatter outputs the issues in SARIF formatted JSON.
 
 .. versionadded:: 1.7.8
 
+.. versionchanged:: 1.8.0
+    Region start lines match the JSON ``line_number`` (not the first entry
+    of ``line_range``), multi-line regions span the full line range and no
+    longer carry inverted columns, and rules without a CWE omit the
+    ``external/cwe`` tag
+
 """  # noqa: E501
 import datetime
 import logging
@@ -136,6 +142,7 @@ from jschema_to_python.to_json import to_json
 
 import bandit
 from bandit.core import docs_utils
+from bandit.formatters import utils as formatter_utils
 
 LOG = logging.getLogger(__name__)
 SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
@@ -182,10 +189,12 @@ def report(manager, fileobj, sev_level, conf_level, lines=-1):
     run = log.runs[0]
     invocation = run.invocations[0]
 
-    skips = manager.get_skipped()
+    skips = sorted(manager.get_skipped(), key=lambda s: s[0])
     add_skipped_file_notifications(skips, invocation)
 
     issues = manager.get_issue_list(sev_level=sev_level, conf_level=conf_level)
+    sort_attr = formatter_utils.report_sort_attr(manager.agg_type)
+    issues = sorted(issues, key=lambda i: getattr(i, sort_attr))
 
     add_results(issues, run)
 
@@ -252,10 +261,7 @@ def create_result(issue, rules, rule_indices):
 
     add_region_and_context_region(
         physical_location,
-        issue_dict["line_range"],
-        issue_dict["col_offset"],
-        issue_dict["end_col_offset"],
-        issue_dict["code"],
+        issue_dict,
     )
 
     return om.Result(
@@ -282,21 +288,51 @@ def level_from_severity(severity):
         return "warning"
 
 
-def add_region_and_context_region(
-    physical_location, line_range, col_offset, end_col_offset, code
-):
+def add_region_and_context_region(physical_location, issue_dict):
+    line_range = issue_dict["line_range"]
+    col_offset = issue_dict["col_offset"]
+    end_col_offset = issue_dict["end_col_offset"]
+    code = issue_dict["code"]
+    # SARIF regions must start at the issue's actual line; line_range[0]
+    # is only the first line of the flagged node, which can differ (e.g.
+    # multi-line calls where the flagged argument starts further down)
+    start_line = issue_dict["line_number"]
+    end_line = line_range[-1]
+
     if code:
         first_line_number, snippet_lines = parse_code(code)
-        snippet_line = snippet_lines[line_range[0] - first_line_number]
+        snippet_index = start_line - first_line_number
+        # the snippet's context window may not include the issue line;
+        # fall back to the first available snippet line in that case
+        if 0 <= snippet_index < len(snippet_lines):
+            snippet_line = snippet_lines[snippet_index]
+        else:
+            snippet_line = snippet_lines[0]
         snippet = om.ArtifactContent(text=snippet_line)
     else:
+        first_line_number = start_line
+        snippet_lines = []
         snippet = None
 
+    # SARIF columns are 1-based, whereas the AST offsets are 0-based and
+    # exclusive at the end. On a multi-line node the AST end offset is
+    # measured on the last line while the start offset is measured on the
+    # first, so columns only describe a meaningful range on a single-line
+    # region
+    start_column = col_offset + 1
+    if end_line == start_line:
+        end_column = end_col_offset + 1
+        # defensive: never emit an inverted column range
+        if end_column < start_column:
+            end_column = start_column
+    else:
+        end_column = None
+
     physical_location.region = om.Region(
-        start_line=line_range[0],
-        end_line=line_range[1] if len(line_range) > 1 else line_range[0],
-        start_column=col_offset + 1,
-        end_column=end_col_offset + 1,
+        start_line=start_line,
+        end_line=end_line,
+        start_column=start_column,
+        end_column=end_column,
         snippet=snippet,
     )
 
@@ -344,15 +380,19 @@ def create_or_find_rule(issue_dict, rules, rule_indices):
     if rule_id in rules:
         return rules[rule_id], rule_indices[rule_id]
 
+    tags = ["security"]
+    # JSON carries an empty issue_cwe dict when the plugin sets no CWE;
+    # don't emit an "external/cwe/cwe-None" tag in that case
+    cwe_id = issue_dict["issue_cwe"].get("id")
+    if cwe_id:
+        tags.append(f"external/cwe/cwe-{cwe_id}")
+
     rule = om.ReportingDescriptor(
         id=rule_id,
         name=issue_dict["test_name"],
         help_uri=docs_utils.get_url(rule_id),
         properties={
-            "tags": [
-                "security",
-                f"external/cwe/cwe-{issue_dict['issue_cwe'].get('id')}",
-            ],
+            "tags": tags,
             "precision": issue_dict["issue_confidence"].lower(),
         },
     )

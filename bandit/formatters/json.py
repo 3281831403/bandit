@@ -72,17 +72,21 @@ This formatter outputs the issues in JSON.
 .. versionchanged:: 1.7.3
     New field `CWE` added to output
 
+.. versionchanged:: 1.8.0
+    Result ordering matches every other report format for both
+    filename and vulnerability aggregation
+
 """
 # Necessary so we can import the standard library json module while continuing
 # to name this file json.py. (Python 2 only)
 import datetime
 import json
 import logging
-import operator
 import sys
 
 from bandit.core import docs_utils
 from bandit.core import test_properties
+from bandit.formatters import utils as formatter_utils
 
 LOG = logging.getLogger(__name__)
 
@@ -99,7 +103,7 @@ def report(manager, fileobj, sev_level, conf_level, lines=-1):
     """
 
     machine_output = {"results": [], "errors": []}
-    for fname, reason in manager.get_skipped():
+    for fname, reason in sorted(manager.get_skipped()):
         machine_output["errors"].append({"filename": fname, "reason": reason})
 
     results = manager.get_issue_list(
@@ -124,15 +128,10 @@ def report(manager, fileobj, sev_level, conf_level, lines=-1):
         for elem in collector:
             elem["more_info"] = docs_utils.get_url(elem["test_id"])
 
-    itemgetter = operator.itemgetter
-    if manager.agg_type == "vuln":
-        machine_output["results"] = sorted(
-            collector, key=itemgetter("test_name")
-        )
-    else:
-        machine_output["results"] = sorted(
-            collector, key=itemgetter("filename")
-        )
+    machine_output["results"] = sorted(
+        collector,
+        key=lambda r: r[formatter_utils.report_sort_key(manager.agg_type)],
+    )
 
     machine_output["metrics"] = manager.metrics.data
 

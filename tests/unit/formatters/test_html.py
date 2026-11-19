@@ -77,7 +77,6 @@ class HtmlFormatterTests(testtools.TestCase):
 
             self.assertEqual("1000", soup.find_all("span", id="loc")[0].text)
             self.assertEqual("50", soup.find_all("span", id="nosec")[0].text)
-
             issue1 = soup.find_all("div", id="issue-0")[0]
             issue2 = soup.find_all("div", id="issue-1")[0]
             issue3 = soup.find_all("div", id="issue-2")[0]
@@ -147,6 +146,45 @@ class HtmlFormatterTests(testtools.TestCase):
         with open(self.tmp_fname) as f:
             contents = f.read()
         self.assertNotIn(marker, contents)
+
+    def test_metrics_spans_match_totals(self):
+        # every key of the JSON _totals block must be emitted as a span,
+        # using the key itself as the id with dots replaced by dashes
+        from bandit.core import constants
+
+        totals = {"loc": 13, "nosec": 2, "skipped_tests": 1}
+        for criteria, _ in constants.CRITERIA:
+            for rank in constants.RANKING:
+                totals[f"{criteria}.{rank}"] = 0
+        totals["SEVERITY.MEDIUM"] = 2
+        self.manager.metrics.data["_totals"] = totals
+
+        with open(self.tmp_fname, "w") as tmp_file:
+            b_html.report(self.manager, tmp_file, bandit.LOW, bandit.LOW)
+
+        with open(self.tmp_fname) as f:
+            soup = bs4.BeautifulSoup(f.read(), "html.parser")
+
+        self.assertEqual(11, len(totals))
+        for key, value in totals.items():
+            span = soup.find_all("span", id=key.replace(".", "-"))
+            self.assertEqual(1, len(span), f"missing span for {key}")
+            self.assertEqual(str(value), span[0].text)
+
+    @mock.patch("bandit.core.issue.Issue.get_code")
+    @mock.patch("bandit.core.manager.BanditManager.get_issue_list")
+    def test_issue_without_cwe(self, get_issue_list, get_code):
+        # when the plugin sets no CWE, no CWE-0 link may be rendered
+        new_issue = _get_issue_instance(cwe=issue.Cwe.NOTSET)
+        get_issue_list.return_value = [new_issue]
+
+        with open(self.tmp_fname, "w") as tmp_file:
+            b_html.report(self.manager, tmp_file, bandit.LOW, bandit.LOW)
+
+        with open(self.tmp_fname) as f:
+            contents = f.read()
+        self.assertNotIn("CWE-0", contents)
+        self.assertNotIn("<b>CWE:", contents)
 
 
 def _get_issue_instance(

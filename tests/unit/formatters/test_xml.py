@@ -31,6 +31,7 @@ class XmlFormatterTests(testtools.TestCase):
             issue.Cwe.MULTIPLE_BINDS,
             bandit.MEDIUM,
             "Possible binding to all interfaces.",
+            test_id="B104",
         )
         self.manager.out_file = self.tmp_fname
 
@@ -72,16 +73,60 @@ class XmlFormatterTests(testtools.TestCase):
 
         with open(self.tmp_fname) as f:
             data = self._xml_to_dict(ET.XML(f.read()))
+            testcase = data["testsuite"]["testcase"]
             self.assertEqual(
-                self.tmp_fname, data["testsuite"]["testcase"]["@classname"]
+                self.tmp_fname, testcase["@classname"]
             )
             self.assertEqual(
                 self.issue.text,
-                data["testsuite"]["testcase"]["error"]["@message"],
+                testcase["error"]["@message"],
             )
             self.assertEqual(
-                self.check_name, data["testsuite"]["testcase"]["@name"]
+                self.check_name, testcase["@name"]
             )
             self.assertIsNotNone(
-                data["testsuite"]["testcase"]["error"]["@more_info"]
+                testcase["error"]["@more_info"]
             )
+
+    def test_testcase_carries_test_id_and_line(self):
+        with open(self.tmp_fname, "wb") as tmp_file:
+            b_xml.report(
+                self.manager,
+                tmp_file,
+                self.issue.severity,
+                self.issue.confidence,
+            )
+
+        with open(self.tmp_fname) as f:
+            root = ET.XML(f.read())
+            testcase = root.find("testcase")
+            # values must match the JSON report's test_id / line_number
+            self.assertEqual(self.issue.test_id, testcase.get("test_id"))
+            self.assertEqual(str(self.issue.lineno), testcase.get("line"))
+
+    def test_skipped_files_are_reported(self):
+        self.manager.skipped = [
+            ("bad.py", "syntax error while parsing AST from file")
+        ]
+
+        with open(self.tmp_fname, "wb") as tmp_file:
+            b_xml.report(
+                self.manager,
+                tmp_file,
+                self.issue.severity,
+                self.issue.confidence,
+            )
+
+        with open(self.tmp_fname) as f:
+            root = ET.XML(f.read())
+            testcases = root.findall("testcase")
+            self.assertEqual("2", root.get("tests"))
+            self.assertEqual(2, len(testcases))
+
+            skipped = testcases[1]
+            self.assertEqual("bad.py", skipped.get("classname"))
+            self.assertEqual("skipped", skipped.get("name"))
+            self.assertEqual("0", skipped.get("line"))
+            error = skipped.find("error")
+            self.assertIsNotNone(error)
+            self.assertIn("syntax error", error.get("message"))

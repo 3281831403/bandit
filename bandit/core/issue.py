@@ -222,7 +222,10 @@ class Issue:
         self.code = data["code"]
         self.fname = data["filename"]
         self.severity = data["issue_severity"]
-        self.cwe = cwe_from_dict(data["issue_cwe"])
+        # Baselines written before the CWE (and column offset) fields were
+        # introduced do not carry these keys; default to "not set" so such
+        # baselines remain readable.
+        self.cwe = cwe_from_dict(data.get("issue_cwe", {}))
         self.confidence = data["issue_confidence"]
         self.text = data["issue_text"]
         self.test = data["test_name"]
