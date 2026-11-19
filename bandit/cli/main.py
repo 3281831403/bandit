@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """Bandit is a tool designed to find common security issues in Python code."""
+
 import argparse
 import fnmatch
 import logging
@@ -18,6 +19,67 @@ from bandit.core import utils
 
 BASE_CONFIG = "bandit.yaml"
 LOG = logging.getLogger()
+
+# valid keys for the [bandit] section of an ini (.bandit) file
+INI_OPTION_KEYS = {
+    "aggregate",
+    "baseline",
+    "confidence",
+    "configfile",
+    "debug",
+    "exclude",
+    "format",
+    "ignore-nosec",
+    "level",
+    "msg-template",
+    "number",
+    "output",
+    "profile",
+    "quiet",
+    "recursive",
+    "skips",
+    "targets",
+    "tests",
+    "verbose",
+}
+
+# mapping of severity/confidence level names to their numeric values
+LEVEL_NAMES = {"all": 1, "low": 2, "medium": 3, "high": 4}
+
+
+def _ini_option_error(option, value, expected):
+    """Report an invalid ini option value and exit like a bad -c config."""
+    LOG.error(
+        "Invalid value '%s' for ini option '%s', expected %s",
+        value,
+        option,
+        expected,
+    )
+    sys.exit(2)
+
+
+def _parse_ini_bool(option, value):
+    """Parse an ini boolean, true/false/1/0 with command line meaning."""
+    val = str(value).strip().lower()
+    if val in ("true", "1"):
+        return True
+    if val in ("false", "0"):
+        return False
+    _ini_option_error(option, value, "one of true/false/1/0")
+
+
+def _parse_ini_level(option, value):
+    """Parse an ini severity/confidence level, 1-4 or all/low/medium/high."""
+    val = str(value).strip().lower()
+    if val in LEVEL_NAMES:
+        return LEVEL_NAMES[val]
+    try:
+        level = int(val)
+    except ValueError:
+        level = None
+    if level in (1, 2, 3, 4):
+        return level
+    _ini_option_error(option, value, "1-4 or all/low/medium/high")
 
 
 def _init_logger(log_level=logging.INFO, log_format=None):
@@ -178,7 +240,7 @@ def main():
         "--aggregate",
         dest="agg_type",
         action="store",
-        default="file",
+        default=None,
         type=str,
         choices=["file", "vuln"],
         help="aggregate output by vulnerability (default) or by filename",
@@ -188,7 +250,7 @@ def main():
         "--number",
         dest="context_lines",
         action="store",
-        default=3,
+        default=None,
         type=int,
         help="maximum number of code lines to output for each issue",
     )
@@ -235,7 +297,7 @@ def main():
         "--level",
         dest="severity",
         action="count",
-        default=1,
+        default=None,
         help="report only issues of a given severity level or "
         "higher (-l for LOW, -ll for MEDIUM, -lll for HIGH)",
     )
@@ -255,7 +317,7 @@ def main():
         "--confidence",
         dest="confidence",
         action="count",
-        default=1,
+        default=None,
         help="report only issues of a given confidence level or "
         "higher (-i for LOW, -ii for MEDIUM, -iii for HIGH)",
     )
@@ -283,7 +345,7 @@ def main():
         "--format",
         dest="output_format",
         action="store",
-        default=output_format,
+        default=None,
         help="specify output format",
         choices=sorted(extension_mgr.formatter_names),
     )
@@ -303,7 +365,7 @@ def main():
         action="store",
         nargs="?",
         type=argparse.FileType("w", encoding="utf-8"),
-        default=sys.stdout,
+        default=None,
         help="write report to filename",
     )
     group = parser.add_mutually_exclusive_group(required=False)
@@ -340,7 +402,7 @@ def main():
         "--exclude",
         dest="excluded_paths",
         action="store",
-        default=",".join(constants.EXCLUDE),
+        default=None,
         help="comma-separated list of paths (glob patterns "
         "supported) to exclude from scan "
         "(note that these are in addition to the excluded "
@@ -427,175 +489,167 @@ def main():
 
     # setup work - parse arguments, and initialize BanditManager
     args = parser.parse_args()
-    # Check if `--msg-template` is not present without custom formatter
-    if args.output_format != "custom" and args.msg_template is not None:
-        parser.error("--msg-template can only be used with --format=custom")
 
     # Check if confidence or severity level have been specified with strings
     if args.severity_string is not None:
-        if args.severity_string == "all":
-            args.severity = 1
-        elif args.severity_string == "low":
-            args.severity = 2
-        elif args.severity_string == "medium":
-            args.severity = 3
-        elif args.severity_string == "high":
-            args.severity = 4
+        args.severity = LEVEL_NAMES[args.severity_string]
         # Other strings will be blocked by argparse
+    elif args.severity is not None:
+        # -l counts up from the default of 1
+        args.severity += 1
 
     if args.confidence_string is not None:
-        if args.confidence_string == "all":
-            args.confidence = 1
-        elif args.confidence_string == "low":
-            args.confidence = 2
-        elif args.confidence_string == "medium":
-            args.confidence = 3
-        elif args.confidence_string == "high":
-            args.confidence = 4
+        args.confidence = LEVEL_NAMES[args.confidence_string]
         # Other strings will be blocked by argparse
+    elif args.confidence is not None:
+        # -i counts up from the default of 1
+        args.confidence += 1
 
     # Handle .bandit files in projects to pass cmdline args from file
-    ini_options = _get_options_from_ini(args.ini_path, args.targets)
+    try:
+        ini_options = _get_options_from_ini(args.ini_path, args.targets)
+    except utils.ConfigError as err:
+        LOG.error(err)
+        sys.exit(2)
+
     if ini_options:
-        # prefer command line, then ini file
+        unknown_keys = sorted(set(ini_options) - INI_OPTION_KEYS)
+        if unknown_keys:
+            LOG.error(
+                "Unknown option(s) in ini file: %s", ", ".join(unknown_keys)
+            )
+            sys.exit(2)
+
+        # prefer command line, then ini file, then defaults
         args.config_file = _log_option_source(
-            parser.get_default("configfile"),
+            None,
             args.config_file,
             ini_options.get("configfile"),
             "config file",
         )
 
         args.excluded_paths = _log_option_source(
-            parser.get_default("excluded_paths"),
+            None,
             args.excluded_paths,
             ini_options.get("exclude"),
             "excluded paths",
         )
 
         args.skips = _log_option_source(
-            parser.get_default("skips"),
-            args.skips,
-            ini_options.get("skips"),
-            "skipped tests",
+            None, args.skips, ini_options.get("skips"), "skipped tests"
         )
 
         args.tests = _log_option_source(
-            parser.get_default("tests"),
-            args.tests,
-            ini_options.get("tests"),
-            "selected tests",
+            None, args.tests, ini_options.get("tests"), "selected tests"
         )
 
         ini_targets = ini_options.get("targets")
         if ini_targets:
             ini_targets = ini_targets.split(",")
 
-        args.targets = _log_option_source(
-            parser.get_default("targets"),
-            args.targets,
-            ini_targets,
-            "selected targets",
-        )
-
-        # TODO(tmcpeak): any other useful options to pass from .bandit?
-
-        args.recursive = _log_option_source(
-            parser.get_default("recursive"),
-            args.recursive,
-            ini_options.get("recursive"),
-            "recursive scan",
-        )
-
-        args.agg_type = _log_option_source(
-            parser.get_default("agg_type"),
-            args.agg_type,
-            ini_options.get("aggregate"),
-            "aggregate output type",
-        )
-
-        args.context_lines = _log_option_source(
-            parser.get_default("context_lines"),
-            args.context_lines,
-            int(ini_options.get("number") or 0) or None,
-            "max code lines output for issue",
+        args.targets = (
+            _log_option_source(
+                None, args.targets or None, ini_targets, "selected targets"
+            )
+            or []
         )
 
         args.profile = _log_option_source(
-            parser.get_default("profile"),
-            args.profile,
-            ini_options.get("profile"),
-            "profile",
-        )
-
-        args.severity = _log_option_source(
-            parser.get_default("severity"),
-            args.severity,
-            ini_options.get("level"),
-            "severity level",
-        )
-
-        args.confidence = _log_option_source(
-            parser.get_default("confidence"),
-            args.confidence,
-            ini_options.get("confidence"),
-            "confidence level",
-        )
-
-        args.output_format = _log_option_source(
-            parser.get_default("output_format"),
-            args.output_format,
-            ini_options.get("format"),
-            "output format",
+            None, args.profile, ini_options.get("profile"), "profile"
         )
 
         args.msg_template = _log_option_source(
-            parser.get_default("msg_template"),
+            None,
             args.msg_template,
             ini_options.get("msg-template"),
             "output message template",
         )
 
-        args.output_file = _log_option_source(
-            parser.get_default("output_file"),
-            args.output_file,
-            ini_options.get("output"),
-            "output file",
-        )
-
-        args.verbose = _log_option_source(
-            parser.get_default("verbose"),
-            args.verbose,
-            ini_options.get("verbose"),
-            "output extra information",
-        )
-
-        args.debug = _log_option_source(
-            parser.get_default("debug"),
-            args.debug,
-            ini_options.get("debug"),
-            "debug mode",
-        )
-
-        args.quiet = _log_option_source(
-            parser.get_default("quiet"),
-            args.quiet,
-            ini_options.get("quiet"),
-            "silent mode",
-        )
-
-        args.ignore_nosec = _log_option_source(
-            parser.get_default("ignore_nosec"),
-            args.ignore_nosec,
-            ini_options.get("ignore-nosec"),
-            "do not skip lines with # nosec",
-        )
-
         args.baseline = _log_option_source(
-            parser.get_default("baseline"),
+            None,
             args.baseline,
             ini_options.get("baseline"),
             "path of a baseline report",
         )
+
+        # boolean options accept true/false/1/0 in the ini file
+        for dest, key in (
+            ("recursive", "recursive"),
+            ("verbose", "verbose"),
+            ("debug", "debug"),
+            ("quiet", "quiet"),
+            ("ignore_nosec", "ignore-nosec"),
+        ):
+            ini_val = ini_options.get(key)
+            if ini_val is not None and not getattr(args, dest):
+                setattr(args, dest, _parse_ini_bool(key, ini_val))
+
+        if args.agg_type is None:
+            ini_val = ini_options.get("aggregate")
+            if ini_val is not None:
+                if ini_val not in ("file", "vuln"):
+                    _ini_option_error("aggregate", ini_val, "one of file/vuln")
+                args.agg_type = ini_val
+
+        if args.context_lines is None:
+            ini_val = ini_options.get("number")
+            if ini_val is not None:
+                try:
+                    args.context_lines = int(ini_val)
+                except ValueError:
+                    _ini_option_error("number", ini_val, "an integer")
+
+        if args.severity is None:
+            ini_val = ini_options.get("level")
+            if ini_val is not None:
+                args.severity = _parse_ini_level("level", ini_val)
+
+        if args.confidence is None:
+            ini_val = ini_options.get("confidence")
+            if ini_val is not None:
+                args.confidence = _parse_ini_level("confidence", ini_val)
+
+        if args.output_format is None:
+            ini_val = ini_options.get("format")
+            if ini_val is not None:
+                if ini_val not in extension_mgr.formatter_names:
+                    _ini_option_error(
+                        "format",
+                        ini_val,
+                        "one of " + ", ".join(extension_mgr.formatter_names),
+                    )
+                args.output_format = ini_val
+
+        if args.output_file is None:
+            ini_val = ini_options.get("output")
+            if ini_val:
+                try:
+                    args.output_file = open(ini_val, "w", encoding="utf-8")
+                except OSError as err:
+                    LOG.error(
+                        "Unable to open output file %s: %s", ini_val, err
+                    )
+                    sys.exit(2)
+
+    # apply defaults for anything not set by command line or ini file
+    if args.excluded_paths is None:
+        args.excluded_paths = ",".join(constants.EXCLUDE)
+    if args.agg_type is None:
+        args.agg_type = "file"
+    if args.context_lines is None:
+        args.context_lines = 3
+    if args.severity is None:
+        args.severity = 1
+    if args.confidence is None:
+        args.confidence = 1
+    if args.output_format is None:
+        args.output_format = output_format
+    if args.output_file is None:
+        args.output_file = sys.stdout
+
+    # Check if `--msg-template` is not present without custom formatter
+    if args.output_format != "custom" and args.msg_template is not None:
+        parser.error("--msg-template can only be used with --format=custom")
 
     try:
         b_conf = b_config.BanditConfig(config_file=args.config_file)

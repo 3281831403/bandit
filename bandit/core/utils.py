@@ -353,18 +353,29 @@ def get_path_for_function(f):
 
 
 def parse_ini_file(f_loc):
+    """Parse an ini file and return the [bandit] section as a dict.
+
+    Returns None if the file cannot be read or contains no [bandit]
+    section. Raises ConfigError if the file is not valid ini, matching
+    the behavior of a bad config file passed with -c.
+    """
     config = configparser.ConfigParser()
     try:
         config.read(f_loc)
-        return {k: v for k, v in config.items("bandit")}
+    except configparser.Error as err:
+        raise ConfigError(f"Error parsing file: {err}", f_loc)
 
-    except (configparser.Error, KeyError, TypeError):
+    if not config.has_section("bandit"):
         LOG.warning(
-            "Unable to parse config file %s or missing [bandit] " "section",
+            "Unable to parse config file %s or missing [bandit] section",
             f_loc,
         )
+        return None
 
-    return None
+    try:
+        return {k: v for k, v in config.items("bandit")}
+    except (configparser.Error, TypeError) as err:
+        raise ConfigError(f"Error parsing file: {err}", f_loc)
 
 
 def check_ast_node(name):
