@@ -297,6 +297,40 @@ class BaselineFunctionalTests(testtools.TestCase):
         # candidate #6
         self.assertIn(candidate_example_six, return_value)
 
+    def test_new_candidates_with_invalid_nosec_id(self):
+        """An issue hidden by an invalid nosec id becomes a new candidate.
+
+        A baseline produced while the invalid id wrongly suppressed the
+        finding contains no results for the file. After the fix the finding
+        is no longer suppressed and must be reported as a new candidate, while
+        the invalid id is counted (and warned about) rather than honored.
+        """
+        target_directory = self.useFixture(fixtures.TempDir()).path
+        target_file = os.path.join(target_directory, "invalid_nosec.py")
+        shutil.copy(
+            os.path.join(
+                self.examples_path, "nosec_invalid_id.py"
+            ),
+            target_file,
+        )
+        # baseline claims the file previously had no findings
+        baseline_report = os.path.join(
+            target_directory, self.baseline_report_file
+        )
+        with open(baseline_report, "w") as fd:
+            fd.write('{"errors": [], "results": []}')
+
+        return_value, return_code = self._run_bandit_baseline(
+            target_directory, baseline_report
+        )
+
+        # the B101 finding hidden by "# nosec B999" is now a candidate
+        self.assertEqual(1, return_code)
+        self.assertIn("Issue: [B101:assert_used]", return_value)
+        self.assertIn("invalid_nosec.py", return_value)
+        # the invalid id is counted, not honored
+        self.assertIn("B999): 2", return_value)
+
     def test_new_candidates_include_nosec_new_nosecs(self):
         """Test to check nosec references with new candidates, including nosecs
 

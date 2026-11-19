@@ -778,6 +778,73 @@ class FunctionalTests(testtools.TestCase):
         }
         self.check_example("nosec.py", expect)
 
+    def test_nosec_invalid_id_does_not_suppress(self):
+        """Invalid nosec ids never suppress findings; they are only counted.
+
+        ``# nosec B999`` on the assert line must not hide B101. A valid id
+        on the same comment as an invalid one (``# nosec B888, B403``) still
+        suppresses only its own test, while the invalid id is counted.
+        """
+        expect = {
+            "SEVERITY": {"UNDEFINED": 0, "LOW": 1, "MEDIUM": 0, "HIGH": 0},
+            "CONFIDENCE": {"UNDEFINED": 0, "LOW": 0, "MEDIUM": 0, "HIGH": 1},
+        }
+        with self.assertLogs(
+            "bandit.core.manager", level="WARNING"
+        ) as logs:
+            self.check_example("nosec_invalid_id.py", expect)
+
+        # one warning per invalid id (B999 and B888), naming each bad id
+        self.assertEqual(2, len(logs.output))
+        self.assertIn("B999", logs.output[0])
+        self.assertIn("B888", logs.output[1])
+
+        expect_stats = {
+            "nosec": 0,
+            "skipped_tests": 2,
+            "nosec_ignored": 2,
+        }
+        self.check_metrics("nosec_invalid_id.py", expect_stats)
+
+        # the metric must be present per file as well as in the totals
+        m = self.b_mgr.metrics.data
+        fname = next(k for k in m if k != "_totals")
+        self.assertEqual(2, m[fname]["nosec_ignored"])
+
+    def test_nosec_invalid_id_ignored_when_ignore_nosec(self):
+        """With --ignore-nosec all three nosec metrics must be zero."""
+        self.b_mgr.metrics = metrics.Metrics()
+        self.b_mgr.scores = []
+        self.run_example("nosec_invalid_id.py", ignore_nosec=True)
+        m = self.b_mgr.metrics.data["_totals"]
+        self.assertEqual(0, m["nosec"])
+        self.assertEqual(0, m["skipped_tests"])
+        self.assertEqual(0, m["nosec_ignored"])
+        # nothing is suppressed, so all three findings are reported
+        self.assertEqual(3, len(self.b_mgr.get_issue_list()))
+
+    def test_nosec_prose_still_suppresses_without_warning(self):
+        """Bare nosec with prose stays blanket and emits no id warning."""
+        expect = {
+            "SEVERITY": {"UNDEFINED": 0, "LOW": 5, "MEDIUM": 0, "HIGH": 0},
+            "CONFIDENCE": {"UNDEFINED": 0, "LOW": 0, "MEDIUM": 0, "HIGH": 5},
+        }
+        # assertNoLogs ensures the old "is not a test name or id" warnings
+        # are not raised for prose such as "(on the line)"
+        with self.assertNoLogs("bandit.core.manager", level="WARNING"):
+            self.check_example("nosec.py", expect)
+        self.check_metrics("nosec.py", {"nosec": 5, "skipped_tests": 10})
+
+    def test_nosec_blanket_deduped_per_suppressed_line(self):
+        """A blanket nosec hiding several findings counts the line once."""
+        # line 2 of this example raises both B607 and B602 under one nosec
+        expect = {
+            "SEVERITY": {"UNDEFINED": 0, "LOW": 3, "MEDIUM": 0, "HIGH": 0},
+            "CONFIDENCE": {"UNDEFINED": 0, "LOW": 0, "MEDIUM": 0, "HIGH": 3},
+        }
+        self.check_example("nosec_blanket_dedup.py", expect)
+        self.check_metrics("nosec_blanket_dedup.py", {"nosec": 1})
+
     def test_baseline_filter(self):
         issue_text = (
             "A Flask app appears to be run with debug=True, which "

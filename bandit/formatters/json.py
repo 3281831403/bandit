@@ -25,7 +25,9 @@ This formatter outputs the issues in JSON.
           "SEVERITY.MEDIUM": 1,
           "SEVERITY.UNDEFINED": 0,
           "loc": 5,
-          "nosec": 0
+          "nosec": 0,
+          "nosec_ignored": 0,
+          "skipped_tests": 0
         },
         "examples/yaml_load.py": {
           "CONFIDENCE.HIGH": 1,
@@ -37,7 +39,9 @@ This formatter outputs the issues in JSON.
           "SEVERITY.MEDIUM": 1,
           "SEVERITY.UNDEFINED": 0,
           "loc": 5,
-          "nosec": 0
+          "nosec": 0,
+          "nosec_ignored": 0,
+          "skipped_tests": 0
         }
       },
       "results": [

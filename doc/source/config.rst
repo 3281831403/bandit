@@ -119,6 +119,29 @@ as an issue.
 
   assert yaml.load("{}") == []  # nosec assert_used
 
+A ``# nosec`` may be followed by free-form prose, for example
+``# nosec (on the line)`` or ``# nosec reviewed by security``. Such comments
+are treated as a bare ``# nosec`` and suppress every result on the line; they
+do not produce warnings.
+
+If an explicit test id is given but no test with that id exists (for example
+``# nosec B999``), the id is invalid. Invalid ids never suppress any result:
+a warning is logged, the id is counted in the ``nosec_ignored`` metric, and
+findings on the line are reported normally. When a comment mixes valid and
+invalid ids, the valid ids still suppress their own tests while the invalid
+ids are counted and ignored.
+
+The metrics distinguish three cases:
+
+* ``nosec`` - the number of lines suppressed by a bare ``# nosec`` (counted
+  once per line even when several results are suppressed on that line)
+* ``skipped_tests`` - the number of results suppressed by a comment naming
+  specific, valid test ids
+* ``nosec_ignored`` - the number of invalid test ids encountered in nosec
+  comments, which suppress nothing
+
+All three counters are zero when ``--ignore-nosec`` is used.
+
 -----------------
 Scanning Behavior
 -----------------

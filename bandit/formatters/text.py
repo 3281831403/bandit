@@ -185,6 +185,15 @@ def report(manager, fileobj, sev_level, conf_level, lines=-1):
             "disabled (e.g., #nosec BXXX): %i"
             % (manager.metrics.data["_totals"]["skipped_tests"])
         )
+        bits.append(
+            "\tTotal invalid test ids in nosec comments (e.g., #nosec "
+            "B999): %i"
+            % (
+                manager.metrics.data["_totals"].get(
+                    "nosec_ignored", 0
+                )
+            )
+        )
 
         skipped = manager.get_skipped()
         bits.append(get_metrics(manager))

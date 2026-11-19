@@ -121,7 +121,12 @@ class ScreenFormatterTests(testtools.TestCase):
 
         get_issue_list.return_value = [issue_a, issue_b]
 
-        self.manager.metrics.data["_totals"] = {"loc": 1000, "nosec": 50}
+        self.manager.metrics.data["_totals"] = {
+            "loc": 1000,
+            "nosec": 50,
+            "skipped_tests": 3,
+            "nosec_ignored": 2,
+        }
         for category in ["SEVERITY", "CONFIDENCE"]:
             for level in ["UNDEFINED", "LOW", "MEDIUM", "HIGH"]:
                 self.manager.metrics.data["_totals"][f"{category}.{level}"] = 1
@@ -170,6 +175,18 @@ class ScreenFormatterTests(testtools.TestCase):
             expected = (
                 "Total lines of code: 1000\n\tTotal lines skipped "
                 "(#nosec): 50"
+            )
+            self.assertIn(expected, data)
+
+            expected = (
+                "Total potential issues skipped due to specifically being "
+                "disabled (e.g., #nosec BXXX): 3"
+            )
+            self.assertIn(expected, data)
+
+            expected = (
+                "Total invalid test ids in nosec comments (e.g., #nosec "
+                "B999): 2"
             )
             self.assertIn(expected, data)
 

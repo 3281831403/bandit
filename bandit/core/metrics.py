@@ -23,6 +23,7 @@ class Metrics:
             "loc": 0,
             "nosec": 0,
             "skipped_tests": 0,
+            "nosec_ignored": 0,
         }
 
         # initialize 0 totals for criteria and rank; this will be reset later
@@ -40,6 +41,7 @@ class Metrics:
             "loc": 0,
             "nosec": 0,
             "skipped_tests": 0,
+            "nosec_ignored": 0,
         }
         self.current = self.data[fname]
 
@@ -58,6 +60,16 @@ class Metrics:
         :param num: number of skipped_tests seen, defaults to 1
         """
         self.current["skipped_tests"] += num
+
+    def note_nosec_ignored(self, num=1):
+        """Note a ``# nosec`` comment naming an unknown test id.
+
+        Increment the currently active metrics nosec_ignored count. Invalid
+        ids do not suppress any finding, they are only counted and warned
+        about.
+        :param num: number of ignored test ids seen, defaults to 1
+        """
+        self.current["nosec_ignored"] += num
 
     def count_locs(self, lines):
         """Count lines of code.

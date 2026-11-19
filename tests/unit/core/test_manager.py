@@ -393,3 +393,57 @@ class ManagerTests(testtools.TestCase):
                 [issue_a, issue_b], [issue_a, issue_b, issue_c]
             ),
         )
+
+    def test_parse_nosec_comment_no_nosec(self):
+        # a regular comment is not a nosec comment
+        self.assertIsNone(manager._parse_nosec_comment("# just a comment"))
+
+    def test_parse_nosec_comment_blanket_bare(self):
+        # a bare nosec, with or without prose, suppresses the whole line and
+        # names no ids
+        for comment in (
+            "# nosec",
+            "#nosec",
+            "# nosec (on the line)",
+            "# nosec reviewed by security",
+            "#nosec(tkelsey): catching expected exception",
+        ):
+            record = manager._parse_nosec_comment(comment)
+            self.assertEqual(set(), record.test_ids, comment)
+            self.assertTrue(record.blanket, comment)
+            self.assertEqual(0, record.ignored, comment)
+
+    def test_parse_nosec_comment_valid_ids(self):
+        record = manager._parse_nosec_comment("# nosec B607, B602")
+        self.assertEqual({"B607", "B602"}, record.test_ids)
+        self.assertFalse(record.blanket)
+        self.assertEqual(0, record.ignored)
+
+    def test_parse_nosec_comment_valid_name(self):
+        # plugin names resolve to their test id and are not prose
+        record = manager._parse_nosec_comment("# nosec assert_used")
+        self.assertEqual({"B101"}, record.test_ids)
+        self.assertFalse(record.blanket)
+        self.assertEqual(0, record.ignored)
+
+    def test_parse_nosec_comment_invalid_id_never_blanket(self):
+        # an unknown explicit id is counted as ignored and must not produce a
+        # blanket suppression
+        record = manager._parse_nosec_comment("# nosec B999")
+        self.assertEqual(set(), record.test_ids)
+        self.assertFalse(record.blanket)
+        self.assertEqual(1, record.ignored)
+
+    def test_parse_nosec_comment_mixed_valid_and_invalid_id(self):
+        record = manager._parse_nosec_comment("# nosec B607, B999")
+        self.assertEqual({"B607"}, record.test_ids)
+        self.assertFalse(record.blanket)
+        self.assertEqual(1, record.ignored)
+
+    def test_parse_nosec_comment_prose_is_not_invalid_id(self):
+        # prose tokens are not B... ids, so they neither resolve nor count as
+        # ignored invalid ids; the comment stays a blanket nosec
+        record = manager._parse_nosec_comment("# nosec (on the line)")
+        self.assertEqual(set(), record.test_ids)
+        self.assertTrue(record.blanket)
+        self.assertEqual(0, record.ignored)

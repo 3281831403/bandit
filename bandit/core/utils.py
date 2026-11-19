@@ -388,11 +388,3 @@ def check_ast_node(name):
         pass
 
     raise TypeError(f"Error: {name} is not a valid node type in AST")
-
-
-def get_nosec(nosec_lines, context):
-    for lineno in context["linerange"]:
-        nosec = nosec_lines.get(lineno, None)
-        if nosec is not None:
-            return nosec
-    return None

@@ -26,7 +26,24 @@ from bandit.core import test_set as b_test_set
 LOG = logging.getLogger(__name__)
 NOSEC_COMMENT = re.compile(r"#\s*nosec:?\s*(?P<tests>[^#]+)?#?")
 NOSEC_COMMENT_TESTS = re.compile(r"(?:(B\d+|[a-z\d_]+),?)+", re.IGNORECASE)
+# An explicit test id always looks like B followed by digits. Anything else
+# after a nosec comment is either a plugin name or free-form prose, neither of
+# which should be treated as an (invalid) test id.
+NOSEC_EXPLICIT_TEST_ID = re.compile(r"B\d+", re.IGNORECASE)
 PROGRESS_THRESHOLD = 50
+
+# Parsed representation of a single ``# nosec`` comment.
+#
+# test_ids: the valid test ids explicitly named in the comment. When non-empty
+#           only those tests are suppressed on the line.
+# blanket:  True for a bare ``# nosec`` (optionally followed by prose such as
+#           ``(on the line)`` or ``reviewed by security``) which suppresses
+#           every finding on the line.
+# ignored:  number of explicit test ids in the comment which do not resolve to
+#           a known test. Such ids never suppress anything.
+NosecRecord = collections.namedtuple(
+    "NosecRecord", "test_ids blanket ignored"
+)
 
 
 class BanditManager:
@@ -305,8 +322,8 @@ class BanditManager:
             lines = data.splitlines()
             self.metrics.begin(fname)
             self.metrics.count_locs(lines)
-            # nosec_lines is a dict of line number -> set of tests to ignore
-            #                                         for the line
+            # nosec_lines is a dict of line number -> NosecRecord describing
+            # the nosec comment(s) found on that line
             nosec_lines = dict()
             try:
                 fdata.seek(0)
@@ -315,7 +332,13 @@ class BanditManager:
                 if not self.ignore_nosec:
                     for toktype, tokval, (lineno, _), _, _ in tokens:
                         if toktype == tokenize.COMMENT:
-                            nosec_lines[lineno] = _parse_nosec_comment(tokval)
+                            nosec = _parse_nosec_comment(tokval)
+                            if nosec is not None:
+                                nosec_lines[lineno] = nosec
+                                if nosec.ignored:
+                                    self.metrics.note_nosec_ignored(
+                                        nosec.ignored
+                                    )
 
             except tokenize.TokenError:
                 pass
@@ -476,24 +499,52 @@ def _find_test_id_from_nosec_string(extman, match):
 
 
 def _parse_nosec_comment(comment):
+    """Parse a ``# nosec`` comment into a :class:`NosecRecord`.
+
+    * A bare ``# nosec`` (including comments with free-form prose such as
+      ``# nosec (on the line)`` or ``# nosec reviewed by security``) produces
+      a blanket record which suppresses every finding on the line.
+    * Explicit, resolvable test ids (``# nosec B602`` or a plugin name)
+      produce a record which only suppresses those tests.
+    * Explicit but unknown test ids (e.g. ``# nosec B999``) are warned about
+      as before, counted as ignored, and never suppress anything.
+
+    :param comment: the raw source comment
+    :return: a NosecRecord, or None if the comment is not a nosec comment
+    """
     found_no_sec_comment = NOSEC_COMMENT.search(comment)
     if not found_no_sec_comment:
         # there was no nosec comment
         return None
 
     matches = found_no_sec_comment.groupdict()
-    nosec_tests = matches.get("tests", set())
+    nosec_tests = matches.get("tests")
 
-    # empty set indicates that there was a nosec comment without specific
-    # test ids or names
     test_ids = set()
+    ignored = 0
+
     if nosec_tests:
         extman = extension_loader.MANAGER
         # lookup tests by short code or name
         for test in NOSEC_COMMENT_TESTS.finditer(nosec_tests):
             test_match = test.group(1)
-            test_id = _find_test_id_from_nosec_string(extman, test_match)
-            if test_id:
-                test_ids.add(test_id)
+            if NOSEC_EXPLICIT_TEST_ID.fullmatch(test_match):
+                # an explicit B... id: either resolve it or flag it. An
+                # unknown id must never suppress a finding.
+                test_id = _find_test_id_from_nosec_string(extman, test_match)
+                if test_id:
+                    test_ids.add(test_id)
+                else:
+                    ignored += 1
+            else:
+                # a plugin name if it resolves, otherwise treat the token as
+                # free-form prose rather than a misspelled test id
+                test_id = extman.get_test_id(test_match)
+                if test_id:
+                    test_ids.add(test_id)
 
-    return test_ids
+    # only a comment without any explicit, resolvable test ids acts as a
+    # blanket nosec; comments listing only invalid ids do not
+    blanket = not test_ids and ignored == 0
+
+    return NosecRecord(test_ids=test_ids, blanket=blanket, ignored=ignored)

@@ -109,7 +109,8 @@ class TextFormatterTests(testtools.TestCase):
         self.manager.metrics.data["_totals"] = {
             "loc": 1000,
             "nosec": 50,
-            "skipped_tests": 0,
+            "skipped_tests": 3,
+            "nosec_ignored": 2,
         }
         for category in ["SEVERITY", "CONFIDENCE"]:
             for level in ["UNDEFINED", "LOW", "MEDIUM", "HIGH"]:
@@ -157,7 +158,9 @@ class TextFormatterTests(testtools.TestCase):
                 "Total lines skipped ",
                 "(#nosec): 50",
                 "Total potential issues skipped due to specifically being ",
-                "disabled (e.g., #nosec BXXX): 0",
+                "disabled (e.g., #nosec BXXX): 3",
+                "Total invalid test ids in nosec comments (e.g., #nosec ",
+                "B999): 2",
                 "Total issues (by severity)",
                 "Total issues (by confidence)",
                 "Files skipped (1)",
